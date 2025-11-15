@@ -12,4 +12,5 @@ require (
 require (
 	github.com/eclipse/paho.mqtt.golang v1.5.1
 	golang.org/x/net v0.44.0 // indirect
+	google.golang.org/protobuf v1.36.10
 )

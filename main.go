@@ -10,26 +10,14 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-var messageHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
-	fmt.Printf("📨 Топик: %s\nСообщение: %s\n\n", msg.Topic(), msg.Payload())
-}
-
-var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
-	fmt.Println("✅ Подключение к MQTT брокеру установлено")
-}
-
-var connectionLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
-	fmt.Printf("❌ Соединение потеряно: %v\n", err)
-}
-
 func main() {
 	// Настройка подключения
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(Broker)
 	opts.SetClientID("go_mqtt_client_" + fmt.Sprint(time.Now().Unix()))
-	opts.SetDefaultPublishHandler(messageHandler)
-	opts.OnConnect = connectHandler
-	opts.OnConnectionLost = connectionLostHandler
+	opts.SetDefaultPublishHandler(MessageHandler)
+	opts.OnConnect = ConnectHandler
+	opts.OnConnectionLost = ConnectionLostHandler
 
 	// Добавляем аутентификацию, если указаны учетные данные
 	if User != "" {
