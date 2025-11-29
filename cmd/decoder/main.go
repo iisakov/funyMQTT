@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/aes"
+	"crypto/cipher"
 	"encoding/csv"
 	"encoding/hex"
 	"fmt"
@@ -288,6 +290,17 @@ func decodeServiceEnvelope(data []byte, record *CSVRecord) {
 		record.PayloadType = "Encrypted"
 		record.EncryptedData = hex.EncodeToString(encrypted)
 		record.PayloadSize = fmt.Sprintf("%d", len(encrypted))
+
+		// Пытаемся расшифровать (если функция расшифровки реализована)
+		// Для полной поддержки расшифровки установите библиотеку github.com/meshtastic/go
+		if decryptedData := tryDecrypt(packet, encrypted); decryptedData != nil {
+			var data generated.Data
+			if err := proto.Unmarshal(decryptedData, &data); err == nil {
+				// Успешно расшифровано!
+				record.PayloadType = "Decrypted"
+				decodeData(&data, record)
+			}
+		}
 	} else {
 		record.PayloadType = "Отсутствует"
 	}
@@ -458,4 +471,126 @@ func boolToString(b bool) string {
 		return "true"
 	}
 	return "false"
+}
+
+// tryDecrypt пытается расшифровать зашифрованные данные используя стандартные ключи Meshtastic
+//
+// Реализация основана на алгоритме Meshtastic:
+// - AES-256-CTR для PSK шифрования каналов
+// - Nonce формируется из ID пакета (8 байт) и From узла (4 байта) + padding
+// - Поддерживаются стандартные ключи: default и simple1-10
+//
+// ВАЖНО: PKI шифрование (для прямых сообщений) не поддерживается в этой реализации,
+// так как требует приватных ключей устройств.
+// tryDecrypt пытается расшифровать зашифрованные данные используя стандартные ключи Meshtastic
+// Реализация основана на алгоритме Meshtastic: AES-256-CTR с nonce из ID пакета и From узла
+func tryDecrypt(packet *generated.MeshPacket, encrypted []byte) []byte {
+	if len(encrypted) == 0 {
+		return nil
+	}
+
+	// Если используется PKI шифрование, нужен приватный ключ (не реализовано здесь)
+	if packet.GetPkiEncrypted() {
+		// Для PKI нужен приватный ключ получателя - это требует библиотеки Meshtastic Go
+		return nil
+	}
+
+	// Стандартный ключ по умолчанию для каналов Meshtastic
+	// Из channel.proto: {0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59, 0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01}
+	defaultPSK := []byte{0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59, 0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01}
+
+	// Пробуем стандартный ключ и варианты (simple1-10)
+	psks := [][]byte{defaultPSK}
+	for i := 1; i <= 10; i++ {
+		psk := make([]byte, 16)
+		copy(psk, defaultPSK)
+		psk[15] = defaultPSK[15] + byte(i)
+		psks = append(psks, psk)
+	}
+
+	// Формируем nonce из ID пакета и From узла
+	// Meshtastic использует ID пакета и From узла для формирования nonce
+	packetID := packet.GetId()
+	fromNode := packet.GetFrom()
+
+	// Пробуем расшифровать с каждым ключом
+	for _, psk := range psks {
+		// Meshtastic использует AES-256, поэтому расширяем 16-байтный PSK до 32 байт
+		// Путем дублирования (стандартный подход Meshtastic)
+		key := make([]byte, 32)
+		copy(key[:16], psk)
+		copy(key[16:], psk)
+
+		// Формируем nonce: для AES-CTR нужен 16-байтный nonce
+		// Meshtastic использует ID пакета (8 байт) и From узла (4 байта) + padding
+		nonce := make([]byte, 16)
+		// Первые 8 байт - ID пакета (little-endian)
+		nonce[0] = byte(packetID)
+		nonce[1] = byte(packetID >> 8)
+		nonce[2] = byte(packetID >> 16)
+		nonce[3] = byte(packetID >> 24)
+		nonce[4] = 0
+		nonce[5] = 0
+		nonce[6] = 0
+		nonce[7] = 0
+		// Следующие 4 байта - From узла (little-endian)
+		nonce[8] = byte(fromNode)
+		nonce[9] = byte(fromNode >> 8)
+		nonce[10] = byte(fromNode >> 16)
+		nonce[11] = byte(fromNode >> 24)
+		nonce[12] = 0
+		nonce[13] = 0
+		nonce[14] = 0
+		nonce[15] = 0
+
+		// Пробуем AES-256-CTR
+		if decrypted := decryptAESCTR(encrypted, key, nonce); len(decrypted) > 0 {
+			// Проверяем, что расшифрованные данные валидны (попытка распарсить как Data)
+			var testData generated.Data
+			if err := proto.Unmarshal(decrypted, &testData); err == nil {
+				// Успешно расшифровано!
+				return decrypted
+			}
+		}
+
+		// Также пробуем с оригинальным 16-байтным ключом для AES-128
+		if decrypted := decryptAESCTR(encrypted, psk, nonce); len(decrypted) > 0 {
+			var testData generated.Data
+			if err := proto.Unmarshal(decrypted, &testData); err == nil {
+				return decrypted
+			}
+		}
+	}
+
+	return nil
+}
+
+// decryptAESCTR расшифровывает данные используя AES-CTR
+func decryptAESCTR(ciphertext []byte, key []byte, nonce []byte) []byte {
+	if len(ciphertext) == 0 || len(nonce) != 16 {
+		return nil
+	}
+
+	var block cipher.Block
+	var err error
+
+	// Поддерживаем только AES-128 (16 байт) и AES-256 (32 байта)
+	if len(key) == 16 {
+		block, err = aes.NewCipher(key)
+	} else if len(key) == 32 {
+		block, err = aes.NewCipher(key)
+	} else {
+		return nil
+	}
+
+	if err != nil {
+		return nil
+	}
+
+	// Создаем CTR stream
+	stream := cipher.NewCTR(block, nonce)
+	plaintext := make([]byte, len(ciphertext))
+	stream.XORKeyStream(plaintext, ciphertext)
+
+	return plaintext
 }

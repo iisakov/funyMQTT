@@ -16,3 +16,5 @@ require (
 )
 
 replace your-project-name/model/meshtastic/go/generated => ./model/meshtastic/go/generated
+
+replace github.com/meshtastic/go => ./local_meshtastic
