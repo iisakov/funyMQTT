@@ -46,9 +46,6 @@ func main() {
 	fmt.Printf("✅ Успешно подписались на топик: %s\n", topic)
 	fmt.Println("📡 Ожидаем сообщения... (Ctrl+C для выхода)")
 
-	// Тестовое декодирование (опционально)
-	// testDecoding()
-
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
